@@ -65,19 +65,54 @@ pnpm 11 prompts to approve native module builds (`better-sqlite3`) even with `on
 
 ## Configure
 
-Run the wizard — it handles everything end-to-end:
+### Interactive (terminal user)
 
 ```bash
 openclaw tcm setup
 ```
 
-It will:
+The wizard:
 
-1. Prompt for endpoint, region, access/secret key, bucket names, `nlm` path, and data directory.
-2. Write `~/.tcm/.env` (mode 0600) with the IDrive credentials.
-3. Verify credentials by listing the source bucket (`ListObjectsV2`, max 1 key).
-4. Verify the `nlm` CLI by running `nlm login --check`.
-5. Print a JSON snippet to paste into `~/.openclaw/config.json` under `plugins.entries`.
+1. Prompts for endpoint, region, access/secret key, bucket names, `nlm` path, data directory.
+2. Discovers buckets via `ListBuckets` and lets you pick subjects.
+3. Writes `~/.tcm/.env` (mode 0600).
+4. Verifies each subject bucket and the `nlm` CLI.
+5. Prints a JSON snippet to paste into `~/.openclaw/config.json` under `plugins.entries` (or pass `--apply-config` to write it for you).
+
+### Non-interactive (chat agent / scripted)
+
+Drive setup from a chat agent or any caller that can shell out — every prompt has a matching flag, and `--json` emits a single-line receipt the caller can parse.
+
+```bash
+openclaw tcm setup --yes \
+  --endpoint https://s3.ap-northeast-1.idrivee2.com \
+  --region ap-northeast-1 \
+  --access-key "$IDRIVE_E2_ACCESS_KEY" \
+  --secret-key "$IDRIVE_E2_SECRET_KEY" \
+  --subject-buckets maths,biology,english,hindi,physics,chemistry,social,telugu \
+  --output-bucket tcm-mcqs \
+  --apply-config \
+  --json
+```
+
+Pass `--subject-buckets auto` to take all discovered buckets except `--output-bucket`. Omit `--access-key`/`--secret-key` to reuse the values already in `~/.tcm/.env`.
+
+Receipt shape (single line, last in stdout):
+
+```json
+{
+  "envPath": "/home/u/.tcm/.env",
+  "subjectBuckets": ["maths","biology",...],
+  "outputBucket": "tcm-mcqs",
+  "bucketChecks": [{"bucket":"maths","ok":true}, ...],
+  "nlmOk": true,
+  "nlmEmail": "you@example.com",
+  "configApplied": true,
+  "warnings": []
+}
+```
+
+Exit codes: `0` success, `1` setup ran but a check failed (env file is still written), `2` required flag missing, `3` ListBuckets failed during `auto` resolution.
 
 ## Required environment variables
 

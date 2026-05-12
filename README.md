@@ -63,10 +63,19 @@ OpenClaw can also install plugins directly from a git URL — see [`docs/INSTALL
 After install, run the setup wizard:
 
 ```bash
-openclaw tcm setup
+openclaw tcm setup                            # interactive — terminal users
 ```
 
-It prompts for IDrive credentials and bucket names, writes `~/.tcm/.env` (mode 0600), verifies your credentials by hitting the source bucket, checks that `nlm` is authenticated, and prints the config snippet to paste into `~/.openclaw/config.json`.
+Or non-interactively (e.g. driven from a chat agent shelling out):
+
+```bash
+openclaw tcm setup --yes \
+  --endpoint https://s3.ap-northeast-1.idrivee2.com --region ap-northeast-1 \
+  --access-key "$AK" --secret-key "$SK" \
+  --subject-buckets auto --output-bucket tcm-mcqs --apply-config --json
+```
+
+Either form writes `~/.tcm/.env` (mode 0600), verifies subject buckets, checks `nlm`, and either prints or auto-applies the `openclaw.json` snippet. See [`docs/INSTALL.md`](./docs/INSTALL.md) for the full flag set and JSON-receipt schema.
 
 ## CLI cheatsheet
 

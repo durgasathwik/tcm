@@ -1,90 +1,173 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
-import { spawn } from "node:child_process";
-import { S3Client } from "@aws-sdk/client-s3";
-import { listAllBuckets } from "../s3-client.js";
+import { join } from "node:path";
+import {
+  expandPath,
+  loadEnvFile,
+  probeCredentials,
+  saveSetup,
+  type SetupAnswers,
+} from "../setup-core.js";
 
 export interface SetupOpts {
+  /** Non-interactive flags. If `yes` is true and required fields are present, no prompts are issued. */
+  yes?: boolean;
+  endpoint?: string;
+  region?: string;
+  accessKey?: string;
+  secretKey?: string;
+  /** Comma-separated, or `auto` to take all discovered buckets except the output. */
+  subjectBuckets?: string;
+  outputBucket?: string;
+  nlmBin?: string;
+  dataDir?: string;
+  /** Path override for the `.env` destination (mostly for tests). */
   envPath?: string;
-}
-
-interface Answers {
-  endpoint: string;
-  region: string;
-  accessKey: string;
-  secretKey: string;
-  subjectBuckets: string[];
-  mcqBucket: string;
-  nlmBin: string;
-  dataDir: string;
+  /** If true, call `openclaw config set ...` to persist the snippet. */
+  applyConfig?: boolean;
+  /** Override the `openclaw` binary path (mostly for tests). */
+  openclawBin?: string;
+  /** Emit a single-line JSON receipt at the end (handy for callers parsing output). */
+  json?: boolean;
 }
 
 const DEFAULTS = {
   endpoint: "https://s3.ap-northeast-1.idrivee2.com",
   region: "ap-northeast-1",
-  mcqBucket: "tcm-mcqs",
+  outputBucket: "tcm-mcqs",
   nlmBin: "~/.local/bin/nlm",
   dataDir: "~/.tcm",
 };
 
-export async function runSetup(opts: SetupOpts = {}): Promise<void> {
-  const rl = createInterface({ input: stdin, output: stdout });
+export async function runSetup(opts: SetupOpts = {}): Promise<number> {
+  const dataDir = opts.dataDir ?? DEFAULTS.dataDir;
+  const envPath = opts.envPath ?? join(expandPath(dataDir), ".env");
+  const existing = loadEnvFile(envPath);
 
+  // Non-interactive: required fields must be present.
+  if (opts.yes) {
+    const missing: string[] = [];
+    if (!opts.accessKey && !existing.IDRIVE_E2_ACCESS_KEY) missing.push("--access-key");
+    if (!opts.secretKey && !existing.IDRIVE_E2_SECRET_KEY) missing.push("--secret-key");
+    if (!opts.subjectBuckets) missing.push("--subject-buckets");
+    if (missing.length > 0) {
+      stdout.write(
+        `setup --yes: missing required flags: ${missing.join(", ")}\n` +
+          `(re-use existing creds from ${envPath} by omitting --access-key / --secret-key)\n`
+      );
+      return 2;
+    }
+    const answers = buildAnswers(opts, existing);
+    if (answers.subjectBuckets[0] === "auto") {
+      // resolve "auto" against ListBuckets, minus the output bucket
+      const probe = await probeCredentials({
+        endpoint: answers.endpoint,
+        region: answers.region,
+        accessKey: answers.accessKey,
+        secretKey: answers.secretKey,
+      });
+      if (!probe.ok) {
+        stdout.write(`setup --yes: could not auto-discover buckets: ${probe.error}\n`);
+        return 3;
+      }
+      answers.subjectBuckets = probe.discoveredBuckets.filter(
+        (b) => b !== answers.outputBucket
+      );
+    }
+    const result = await saveSetup(answers, {
+      envPath: opts.envPath,
+      applyConfig: opts.applyConfig,
+      openclawBin: opts.openclawBin,
+    });
+    if (opts.json) {
+      stdout.write(
+        JSON.stringify({
+          envPath: result.envPath,
+          subjectBuckets: answers.subjectBuckets,
+          outputBucket: answers.outputBucket,
+          bucketChecks: result.bucketChecks,
+          nlmOk: result.nlmCheck.ok,
+          nlmEmail: result.nlmCheck.email,
+          configApplied: result.configApplied,
+          configApplyError: result.configApplyError,
+          warnings: result.warnings,
+        }) + "\n"
+      );
+    } else {
+      stdout.write(`\n=== TCM setup (non-interactive) ===\n`);
+      stdout.write(`✓ wrote ${result.envPath} (mode 0600)\n`);
+      for (const c of result.bucketChecks) {
+        stdout.write(`  ${c.ok ? "✓" : "✗"} ${c.bucket}${c.error ? ` (${c.error})` : ""}\n`);
+      }
+      stdout.write(
+        result.nlmCheck.ok
+          ? `✓ nlm authenticated${result.nlmCheck.email ? ` as ${result.nlmCheck.email}` : ""}\n`
+          : `✗ nlm: ${result.nlmCheck.error}\n`
+      );
+      if (opts.applyConfig) {
+        stdout.write(
+          result.configApplied
+            ? `✓ applied openclaw config\n`
+            : `✗ openclaw config apply: ${result.configApplyError}\n`
+        );
+      } else {
+        stdout.write(
+          `\nConfig snippet (rerun with --apply-config to apply automatically):\n` +
+            result.configSnippetJson
+        );
+      }
+    }
+    return result.ok && (!opts.applyConfig || result.configApplied) ? 0 : 1;
+  }
+
+  // Interactive: original wizard, now backed by setup-core.
+  const rl = createInterface({ input: stdin, output: stdout });
   function ask(prompt: string, defaultValue?: string): Promise<string> {
     const suffix = defaultValue ? ` [${defaultValue}]` : "";
     return rl
       .question(`${prompt}${suffix}: `)
       .then((v) => (v.trim() === "" && defaultValue !== undefined ? defaultValue : v.trim()));
   }
-
   async function askSecret(prompt: string): Promise<string> {
-    process.stdout.write(`(${prompt} — input visible; clear scrollback if sensitive)\n`);
+    stdout.write(`(${prompt} — input visible; clear scrollback if sensitive)\n`);
     return (await rl.question(`${prompt}: `)).trim();
   }
 
   stdout.write(`\n=== TCM Study Bot — Interactive Setup ===\n`);
   stdout.write(`Press Enter to accept the [default] shown in brackets.\n\n`);
 
-  const envPath = opts.envPath ?? join(expandPath(DEFAULTS.dataDir), ".env");
-  const existing = loadEnvFile(envPath);
-
   const endpoint = await ask(
     "IDrive e2 endpoint URL",
-    existing.IDRIVE_E2_ENDPOINT ?? DEFAULTS.endpoint
+    opts.endpoint ?? existing.IDRIVE_E2_ENDPOINT ?? DEFAULTS.endpoint
   );
-  const region = await ask("IDrive e2 region", existing.IDRIVE_E2_REGION ?? DEFAULTS.region);
-  const accessKey = await askSecret("IDrive e2 access key");
-  const secretKey = await askSecret("IDrive e2 secret key");
+  const region = await ask(
+    "IDrive e2 region",
+    opts.region ?? existing.IDRIVE_E2_REGION ?? DEFAULTS.region
+  );
+  const accessKey = opts.accessKey ?? (await askSecret("IDrive e2 access key"));
+  const secretKey = opts.secretKey ?? (await askSecret("IDrive e2 secret key"));
 
-  // Discover buckets right after creds so we can show the actual list.
   stdout.write(`\nDiscovering buckets in ${region}...\n`);
-  let discoveredBuckets: string[] = [];
-  try {
-    const client = buildS3(endpoint, region, accessKey, secretKey);
-    discoveredBuckets = await listAllBuckets(client);
-    stdout.write(`Found ${discoveredBuckets.length} bucket(s):\n`);
-    discoveredBuckets.forEach((b, i) => stdout.write(`  ${i + 1}. ${b}\n`));
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    stdout.write(`✗ Could not list buckets: ${msg}\n`);
-    stdout.write(`  Continuing with empty bucket discovery; you'll enter names manually.\n`);
+  const probe = await probeCredentials({ endpoint, region, accessKey, secretKey });
+  if (probe.ok) {
+    stdout.write(`Found ${probe.discoveredBuckets.length} bucket(s):\n`);
+    probe.discoveredBuckets.forEach((b, i) => stdout.write(`  ${i + 1}. ${b}\n`));
+  } else {
+    stdout.write(`✗ Could not list buckets: ${probe.error}\n`);
+    stdout.write(`  Continuing; you'll enter names manually.\n`);
   }
 
-  const mcqBucket = await ask(
+  const outputBucket = await ask(
     "MCQ output bucket (where generated CSVs go)",
-    existing.TCM_MCQ_BUCKET ?? DEFAULTS.mcqBucket
+    opts.outputBucket ?? existing.TCM_MCQ_BUCKET ?? DEFAULTS.outputBucket
   );
 
   let subjectBuckets: string[] = [];
-  if (discoveredBuckets.length > 0) {
-    const candidate = discoveredBuckets.filter((b) => b !== mcqBucket);
-    const csv = candidate.join(",");
+  if (probe.discoveredBuckets.length > 0) {
+    const candidate = probe.discoveredBuckets.filter((b) => b !== outputBucket);
     const answer = await ask(
       `Subject buckets (comma-separated, or 'auto' to use all discovered except output)`,
-      csv
+      candidate.join(",")
     );
     subjectBuckets =
       answer === "auto"
@@ -104,194 +187,85 @@ export async function runSetup(opts: SetupOpts = {}): Promise<void> {
       .filter(Boolean);
   }
 
-  const nlmBin = await ask("nlm CLI path", existing.TCM_NLM_BIN ?? DEFAULTS.nlmBin);
-  const dataDir = await ask("Local data directory", existing.TCM_DATA_DIR ?? DEFAULTS.dataDir);
-
+  const nlmBin = await ask("nlm CLI path", opts.nlmBin ?? existing.TCM_NLM_BIN ?? DEFAULTS.nlmBin);
+  const dataDirAnswer = await ask(
+    "Local data directory",
+    opts.dataDir ?? existing.TCM_DATA_DIR ?? DEFAULTS.dataDir
+  );
   rl.close();
 
-  const answers: Answers = {
+  const answers: SetupAnswers = {
     endpoint,
     region,
     accessKey,
     secretKey,
     subjectBuckets,
-    mcqBucket,
+    outputBucket,
     nlmBin,
-    dataDir,
+    dataDir: dataDirAnswer,
   };
 
-  // Write env file.
-  const envBody = renderEnvFile(answers);
-  mkdirSync(dirname(envPath), { recursive: true });
-  writeFileSync(envPath, envBody, "utf8");
-  try {
-    chmodSync(envPath, 0o600);
-  } catch {
-    // ignore
-  }
-  stdout.write(`\n✓ Wrote ${envPath} (mode 0600)\n`);
+  const result = await saveSetup(answers, {
+    envPath: opts.envPath,
+    applyConfig: opts.applyConfig,
+    openclawBin: opts.openclawBin,
+  });
 
-  // Verify each subject bucket is reachable (HeadBucket via ListObjectsV2 max 1).
+  stdout.write(`\n✓ Wrote ${result.envPath} (mode 0600)\n`);
   if (subjectBuckets.length > 0) {
     stdout.write(`\nVerifying subject buckets...\n`);
-    const client = buildS3(endpoint, region, accessKey, secretKey);
-    for (const b of subjectBuckets) {
-      const ok = await pingBucket(client, b);
-      stdout.write(`  ${ok ? "✓" : "✗"} ${b}\n`);
+    for (const c of result.bucketChecks) {
+      stdout.write(`  ${c.ok ? "✓" : "✗"} ${c.bucket}${c.error ? ` (${c.error})` : ""}\n`);
     }
   }
 
-  // Check nlm CLI.
   stdout.write(`\nChecking nlm CLI at ${nlmBin}...\n`);
-  const nlmStatus = await checkNlm(expandPath(nlmBin));
-  if (nlmStatus.ok) {
-    stdout.write(`✓ nlm authenticated${nlmStatus.email ? ` as ${nlmStatus.email}` : ""}\n`);
-  } else {
-    stdout.write(`✗ nlm check failed: ${nlmStatus.error}\n`);
-    stdout.write(`  Install: pipx install notebooklm-mcp-cli   (then: ${nlmBin} login)\n`);
-  }
+  stdout.write(
+    result.nlmCheck.ok
+      ? `✓ nlm authenticated${result.nlmCheck.email ? ` as ${result.nlmCheck.email}` : ""}\n`
+      : `✗ nlm check failed: ${result.nlmCheck.error}\n` +
+          `  Install: pipx install notebooklm-mcp-cli   (then: ${nlmBin} login)\n`
+  );
 
-  // Print config snippet.
-  stdout.write(`\n=== Paste this into your ~/.openclaw/config.json ===\n`);
-  stdout.write(renderConfigSnippet(answers));
-  stdout.write(`=== End config snippet ===\n\n`);
+  if (opts.applyConfig) {
+    stdout.write(
+      result.configApplied
+        ? `\n✓ applied openclaw config\n`
+        : `\n✗ openclaw config apply: ${result.configApplyError}\n`
+    );
+  } else {
+    stdout.write(`\n=== Paste this into your ~/.openclaw/config.json ===\n`);
+    stdout.write(result.configSnippetJson);
+    stdout.write(`=== End config snippet ===\n\n`);
+  }
 
   stdout.write(`Next:\n`);
-  stdout.write(`  1. set -a; source ${envPath}; set +a   # or load via your service manager\n`);
-  stdout.write(`  2. Apply the config snippet above to ~/.openclaw/config.json\n`);
-  stdout.write(`  3. Restart your OpenClaw gateway\n`);
-  stdout.write(`  4. openclaw tcm idrive sync\n`);
-  stdout.write(`  5. openclaw tcm quiz generate biology --count 5 --difficulty easy\n`);
-}
-
-function expandPath(p: string): string {
-  if (p.startsWith("~")) return join(homedir(), p.slice(2));
-  return p;
-}
-
-function buildS3(endpoint: string, region: string, ak: string, sk: string): S3Client {
-  const ep = /^https?:\/\//.test(endpoint) ? endpoint : `https://${endpoint}`;
-  return new S3Client({
-    endpoint: ep,
-    region,
-    credentials: { accessKeyId: ak, secretAccessKey: sk },
-    forcePathStyle: true,
-  });
-}
-
-async function pingBucket(client: S3Client, bucket: string): Promise<boolean> {
-  try {
-    const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
-    await client.send(new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1 }));
-    return true;
-  } catch {
-    return false;
+  stdout.write(`  1. set -a; source ${result.envPath}; set +a\n`);
+  if (!opts.applyConfig) {
+    stdout.write(`  2. Apply the config snippet above to ~/.openclaw/config.json\n`);
   }
+  stdout.write(`  ${opts.applyConfig ? 2 : 3}. Restart your OpenClaw gateway\n`);
+  stdout.write(`  ${opts.applyConfig ? 3 : 4}. openclaw tcm idrive sync\n`);
+  stdout.write(
+    `  ${opts.applyConfig ? 4 : 5}. openclaw tcm quiz generate biology --count 5 --difficulty easy\n`
+  );
+
+  return result.ok && (!opts.applyConfig || result.configApplied) ? 0 : 1;
 }
 
-function loadEnvFile(path: string): Record<string, string> {
-  if (!existsSync(path)) return {};
-  const out: Record<string, string> = {};
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$/);
-    if (m) out[m[1]] = stripQuotes(m[2]);
-  }
-  return out;
-}
-
-function stripQuotes(s: string): string {
-  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-    return s.slice(1, -1);
-  }
-  return s;
-}
-
-function renderEnvFile(a: Answers): string {
-  const ts = new Date().toISOString();
-  return [
-    `# TCM Study Bot — written by openclaw tcm setup at ${ts}`,
-    `# Source this file before running OpenClaw, e.g.:`,
-    `#   set -a; source ~/.tcm/.env; set +a`,
-    ``,
-    `IDRIVE_E2_ACCESS_KEY=${a.accessKey}`,
-    `IDRIVE_E2_SECRET_KEY=${a.secretKey}`,
-    `IDRIVE_E2_ENDPOINT=${a.endpoint}`,
-    `IDRIVE_E2_REGION=${a.region}`,
-    `TCM_SUBJECT_BUCKETS=${a.subjectBuckets.join(",")}`,
-    `TCM_MCQ_BUCKET=${a.mcqBucket}`,
-    `TCM_NLM_BIN=${a.nlmBin}`,
-    `TCM_DATA_DIR=${a.dataDir}`,
-    ``,
-  ].join("\n");
-}
-
-function renderConfigSnippet(a: Answers): string {
-  const cfg = {
-    plugins: {
-      entries: {
-        "tcm-idrive": {
-          enabled: true,
-          config: {
-            endpoint: a.endpoint,
-            region: a.region,
-            subjectBuckets: a.subjectBuckets,
-            excludeBuckets: [a.mcqBucket],
-            dataDir: a.dataDir,
-          },
-        },
-        "tcm-notebooklm": {
-          enabled: true,
-          config: { nlmBin: a.nlmBin },
-        },
-        "tcm-quiz": {
-          enabled: true,
-          config: {
-            outputBucket: a.mcqBucket,
-            endpoint: a.endpoint,
-            region: a.region,
-            subjectBuckets: a.subjectBuckets,
-            dataDir: a.dataDir,
-            nlmBin: a.nlmBin,
-          },
-        },
-      },
-    },
+function buildAnswers(opts: SetupOpts, existing: Record<string, string>): SetupAnswers {
+  const subjectBuckets = (opts.subjectBuckets ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return {
+    endpoint: opts.endpoint ?? existing.IDRIVE_E2_ENDPOINT ?? DEFAULTS.endpoint,
+    region: opts.region ?? existing.IDRIVE_E2_REGION ?? DEFAULTS.region,
+    accessKey: opts.accessKey ?? existing.IDRIVE_E2_ACCESS_KEY ?? "",
+    secretKey: opts.secretKey ?? existing.IDRIVE_E2_SECRET_KEY ?? "",
+    subjectBuckets,
+    outputBucket: opts.outputBucket ?? existing.TCM_MCQ_BUCKET ?? DEFAULTS.outputBucket,
+    nlmBin: opts.nlmBin ?? existing.TCM_NLM_BIN ?? DEFAULTS.nlmBin,
+    dataDir: opts.dataDir ?? existing.TCM_DATA_DIR ?? DEFAULTS.dataDir,
   };
-  return JSON.stringify(cfg, null, 2) + "\n";
-}
-
-interface NlmCheck {
-  ok: boolean;
-  email?: string;
-  error?: string;
-}
-
-function checkNlm(binPath: string): Promise<NlmCheck> {
-  return new Promise((resolve) => {
-    if (!existsSync(binPath)) {
-      resolve({ ok: false, error: `binary not found at ${binPath}` });
-      return;
-    }
-    const child = spawn(binPath, ["login", "--check"], { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      resolve({ ok: false, error: "nlm check timed out" });
-    }, 15_000);
-    child.stdout.on("data", (b: Buffer) => (stdout += b.toString("utf8")));
-    child.stderr.on("data", (b: Buffer) => (stderr += b.toString("utf8")));
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ ok: false, error: err.message });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      const text = stdout + " " + stderr;
-      const m = text.match(/Authentication valid!?\s*([^\s]+@[^\s]+)?/i);
-      if (code === 0 && m) resolve({ ok: true, email: m[1] });
-      else if (code === 0) resolve({ ok: true });
-      else resolve({ ok: false, error: text.trim().slice(0, 200) || `exit ${code}` });
-    });
-  });
 }

@@ -20,13 +20,45 @@ export function registerTcmIdriveCli(program: Command, ctx: CliContext): void {
     root = program.command("tcm").description("TCM study toolkit commands").helpOption(true);
   }
 
-  // openclaw tcm setup — interactive credential setup. Doesn't need open() because
-  // it captures credentials directly from prompts.
+  // openclaw tcm setup — interactive by default; non-interactive with --yes.
+  // Doesn't need open() because it captures credentials directly.
   root
     .command("setup")
-    .description("Interactive setup: collect IDrive credentials, save to .env, print config snippet")
-    .action(async () => {
-      await runSetup();
+    .description(
+      "Interactive setup, or non-interactive when --yes + required flags are given (useful from chat agents shelling out to the CLI)"
+    )
+    .option("-y, --yes", "Non-interactive mode — require flags, do not prompt")
+    .option("--endpoint <url>", "IDrive e2 endpoint URL")
+    .option("--region <region>", "IDrive e2 region (signature)")
+    .option("--access-key <key>", "IDrive access key")
+    .option("--secret-key <key>", "IDrive secret key")
+    .option(
+      "--subject-buckets <csv>",
+      "Comma-separated subject buckets, or 'auto' to use all discovered except --output-bucket"
+    )
+    .option("--output-bucket <name>", "Bucket where generated MCQ CSVs land")
+    .option("--nlm-bin <path>", "Path to the nlm CLI")
+    .option("--data-dir <path>", "Local data directory (default ~/.tcm)")
+    .option(
+      "--apply-config",
+      "Also run `openclaw config set` to persist the snippet (otherwise just printed)"
+    )
+    .option("--json", "Emit a single-line JSON receipt at the end (non-interactive only)")
+    .action(async (opts) => {
+      const code = await runSetup({
+        yes: !!opts.yes,
+        endpoint: opts.endpoint,
+        region: opts.region,
+        accessKey: opts.accessKey,
+        secretKey: opts.secretKey,
+        subjectBuckets: opts.subjectBuckets,
+        outputBucket: opts.outputBucket,
+        nlmBin: opts.nlmBin,
+        dataDir: opts.dataDir,
+        applyConfig: !!opts.applyConfig,
+        json: !!opts.json,
+      });
+      if (code !== 0) process.exitCode = code;
     });
 
   const idrive = root
