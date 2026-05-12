@@ -1,0 +1,52 @@
+{
+  "id": "tcm-idrive",
+  "name": "TCM IDrive Index",
+  "description": "Indexes an IDrive e2 S3 bucket into a local SQLite store and writes per-folder summaries into OpenClaw's memory directory. Exposes the openclaw tcm idrive ... CLI and an idrive_find tool.",
+  "version": "0.1.0",
+  "contracts": {
+    "tools": ["idrive_find"]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "endpoint": {
+        "type": "string",
+        "description": "IDrive e2 endpoint URL, e.g. https://s3.us-east-1.idrivee2.com"
+      },
+      "region": {
+        "type": "string",
+        "description": "Signature region. Defaults to us-east-1.",
+        "default": "us-east-1"
+      },
+      "sourceBucket": {
+        "type": "string",
+        "description": "S3 bucket holding study files (input)."
+      },
+      "accessKeyEnv": {
+        "type": "string",
+        "description": "Name of the env var holding IDrive e2 access key.",
+        "default": "IDRIVE_E2_ACCESS_KEY"
+      },
+      "secretKeyEnv": {
+        "type": "string",
+        "description": "Name of the env var holding IDrive e2 secret key.",
+        "default": "IDRIVE_E2_SECRET_KEY"
+      },
+      "dataDir": {
+        "type": "string",
+        "description": "Local directory for SQLite index and scratch state.",
+        "default": "~/.tcm"
+      },
+      "memoryDir": {
+        "type": "string",
+        "description": "Where to drop folder-summary markdown files for OpenClaw memory indexer. Empty disables.",
+        "default": ""
+      }
+    },
+    "required": ["endpoint", "sourceBucket"]
+  }
+}

@@ -1,0 +1,75 @@
+import {
+  S3Client,
+  ListObjectsV2Command,
+  GetObjectCommand,
+  type _Object,
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createWriteStream } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+import type { ResolvedIdriveConfig } from "./config.js";
+
+export function buildClient(cfg: ResolvedIdriveConfig): S3Client {
+  // IDrive e2 sometimes returns bare hostnames; ensure scheme.
+  const endpoint = /^https?:\/\//.test(cfg.endpoint) ? cfg.endpoint : `https://${cfg.endpoint}`;
+  return new S3Client({
+    endpoint,
+    region: cfg.region,
+    credentials: { accessKeyId: cfg.accessKey, secretAccessKey: cfg.secretKey },
+    forcePathStyle: true,
+  });
+}
+
+export async function* listAllObjects(
+  client: S3Client,
+  bucket: string,
+  prefix?: string
+): AsyncGenerator<_Object> {
+  let token: string | undefined;
+  do {
+    const out = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: token,
+        MaxKeys: 1000,
+      })
+    );
+    for (const obj of out.Contents ?? []) yield obj;
+    token = out.IsTruncated ? out.NextContinuationToken : undefined;
+  } while (token);
+}
+
+export async function downloadToFile(
+  client: S3Client,
+  bucket: string,
+  key: string,
+  destPath: string
+): Promise<void> {
+  mkdirSync(dirname(destPath), { recursive: true });
+  const out = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const body = out.Body;
+  if (!body) throw new Error(`empty body for s3://${bucket}/${key}`);
+  // Body is a Node Readable stream in node runtimes.
+  await pipeline(body as Readable, createWriteStream(destPath));
+}
+
+export async function presignDownload(
+  client: S3Client,
+  bucket: string,
+  key: string,
+  ttlSeconds: number
+): Promise<string> {
+  return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
+    expiresIn: ttlSeconds,
+  });
+}
+
+/** Strip an etag's surrounding quotes if present. */
+export function cleanEtag(etag: string | undefined): string {
+  if (!etag) return "";
+  return etag.replace(/^"(.+)"$/, "$1");
+}

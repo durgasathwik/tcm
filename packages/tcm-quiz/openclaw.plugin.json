@@ -1,0 +1,65 @@
+{
+  "id": "tcm-quiz",
+  "name": "TCM Quiz Pipeline",
+  "description": "Generates MCQ CSVs from study files: resolves source via tcm-idrive's SQLite index, drives NotebookLM via tcm-notebooklm, writes CSV to a separate output bucket. Reuses notebooks per topic. Exposes openclaw tcm quiz ... CLI and an mcq_status tool.",
+  "version": "0.1.0",
+  "contracts": {
+    "tools": ["mcq_status"]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "outputBucket": {
+        "type": "string",
+        "description": "S3 bucket where generated CSVs land."
+      },
+      "endpoint": {
+        "type": "string",
+        "description": "IDrive e2 endpoint URL (same as tcm-idrive)."
+      },
+      "region": {
+        "type": "string",
+        "default": "us-east-1"
+      },
+      "accessKeyEnv": {
+        "type": "string",
+        "default": "IDRIVE_E2_ACCESS_KEY"
+      },
+      "secretKeyEnv": {
+        "type": "string",
+        "default": "IDRIVE_E2_SECRET_KEY"
+      },
+      "sourceBucket": {
+        "type": "string",
+        "description": "S3 bucket holding study files (same as tcm-idrive)."
+      },
+      "dataDir": {
+        "type": "string",
+        "description": "Local state directory shared with tcm-idrive.",
+        "default": "~/.tcm"
+      },
+      "nlmBin": {
+        "type": "string",
+        "default": "~/.local/bin/nlm"
+      },
+      "maxFilesPerJob": {
+        "type": "integer",
+        "default": 5
+      },
+      "presignTtlSeconds": {
+        "type": "integer",
+        "default": 86400
+      },
+      "csvSchema": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["question", "A", "B", "C", "D", "correct", "explanation", "source_key"]
+      }
+    },
+    "required": ["outputBucket", "endpoint", "sourceBucket"]
+  }
+}

@@ -1,0 +1,18 @@
+packages:
+  - "packages/*"
+onlyBuiltDependencies:
+  - better-sqlite3
+ignoredBuiltDependencies:
+  - "@google/genai"
+  - esbuild
+  - koffi
+  - openclaw
+  - protobufjs
+  - tree-sitter-bash
+allowBuilds:
+  '@google/genai': set this to true or false
+  esbuild: set this to true or false
+  koffi: set this to true or false
+  openclaw: set this to true or false
+  protobufjs: set this to true or false
+  tree-sitter-bash: set this to true or false
