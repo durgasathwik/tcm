@@ -8,7 +8,8 @@ export const QuizConfig = z.object({
   region: z.string().default("us-east-1"),
   accessKeyEnv: z.string().default("IDRIVE_E2_ACCESS_KEY"),
   secretKeyEnv: z.string().default("IDRIVE_E2_SECRET_KEY"),
-  sourceBucket: z.string().min(1),
+  /** Subject buckets we're allowed to pull source files from. Used for validation only. */
+  subjectBuckets: z.array(z.string()).default([]),
   dataDir: z.string().default("~/.tcm"),
   nlmBin: z.string().default("~/.local/bin/nlm"),
   maxFilesPerJob: z.number().int().positive().default(5),
@@ -50,4 +51,11 @@ export function resolveConfig(
     accessKey,
     secretKey,
   };
+}
+
+/** Parse "<bucket>" or "<bucket>/<keyOrPrefix>" → { bucket, key }. */
+export function parseSourceSpec(spec: string): { bucket: string; key: string } {
+  const slash = spec.indexOf("/");
+  if (slash === -1) return { bucket: spec, key: "" };
+  return { bucket: spec.slice(0, slash), key: spec.slice(slash + 1) };
 }

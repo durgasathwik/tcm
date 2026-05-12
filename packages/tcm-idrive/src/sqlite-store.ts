@@ -185,6 +185,14 @@ export class SqliteStore {
       .all(bucket, prefix + "%", prefix + "%/%") as FolderRecord[];
   }
 
+  /** All bucket names that have at least one file in the index. */
+  distinctBuckets(): string[] {
+    const rows = this.db
+      .prepare("SELECT DISTINCT bucket FROM files ORDER BY bucket")
+      .all() as Array<{ bucket: string }>;
+    return rows.map((r) => r.bucket);
+  }
+
   /** total file count for a bucket. */
   count(bucket: string): number {
     const row = this.db

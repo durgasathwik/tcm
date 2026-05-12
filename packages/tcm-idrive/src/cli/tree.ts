@@ -5,14 +5,18 @@ export interface TreeOpts {
   cfg: ResolvedIdriveConfig;
   store: SqliteStore;
   depth: number;
+  /** Optional bucket to limit the tree to. */
+  bucket?: string;
 }
 
 export function runTree(opts: TreeOpts): void {
-  const { cfg, store, depth } = opts;
-  const top = store.listTopFolders(cfg.sourceBucket);
-  process.stdout.write(`# ${cfg.sourceBucket}\n`);
-  for (const folder of top) {
-    walk(store, cfg.sourceBucket, folder.path, 1, depth);
+  const { store, depth, bucket } = opts;
+  const buckets = bucket ? [bucket] : store.distinctBuckets();
+  for (const b of buckets) {
+    process.stdout.write(`📦 ${b} (${store.count(b)} files)\n`);
+    const top = store.listTopFolders(b);
+    for (const folder of top) walk(store, b, folder.path, 1, depth);
+    if (top.length === 0) process.stdout.write("  (no folders)\n");
   }
 }
 
@@ -23,7 +27,7 @@ function walk(
   level: number,
   maxDepth: number
 ): void {
-  const indent = "  ".repeat(level - 1);
+  const indent = "  ".repeat(level);
   const folder = store
     .listSubFolders(bucket, path.split("/").slice(0, -1).join("/"))
     .find((f) => f.path === path);

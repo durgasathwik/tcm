@@ -4,11 +4,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "n
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
-import { S3Client, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { S3Client } from "@aws-sdk/client-s3";
+import { listAllBuckets } from "../s3-client.js";
 
 export interface SetupOpts {
   envPath?: string;
-  configHint?: string;
 }
 
 interface Answers {
@@ -16,16 +16,15 @@ interface Answers {
   region: string;
   accessKey: string;
   secretKey: string;
-  sourceBucket: string;
+  subjectBuckets: string[];
   mcqBucket: string;
   nlmBin: string;
   dataDir: string;
 }
 
 const DEFAULTS = {
-  endpoint: "https://s3.us-east-1.idrivee2.com",
-  region: "us-east-1",
-  sourceBucket: "tcm-study",
+  endpoint: "https://s3.ap-northeast-1.idrivee2.com",
+  region: "ap-northeast-1",
   mcqBucket: "tcm-mcqs",
   nlmBin: "~/.local/bin/nlm",
   dataDir: "~/.tcm",
@@ -42,8 +41,7 @@ export async function runSetup(opts: SetupOpts = {}): Promise<void> {
   }
 
   async function askSecret(prompt: string): Promise<string> {
-    // readline doesn't natively mask. Best-effort: warn, then read.
-    process.stdout.write(`(${prompt} — input visible; clear scrollback after if sensitive)\n`);
+    process.stdout.write(`(${prompt} — input visible; clear scrollback if sensitive)\n`);
     return (await rl.question(`${prompt}: `)).trim();
   }
 
@@ -51,77 +49,144 @@ export async function runSetup(opts: SetupOpts = {}): Promise<void> {
   stdout.write(`Press Enter to accept the [default] shown in brackets.\n\n`);
 
   const envPath = opts.envPath ?? join(expandPath(DEFAULTS.dataDir), ".env");
-
-  // Preload existing values from .env if it exists.
   const existing = loadEnvFile(envPath);
 
-  const answers: Answers = {
-    endpoint: await ask("IDrive e2 endpoint URL", existing.IDRIVE_E2_ENDPOINT ?? DEFAULTS.endpoint),
-    region: await ask("IDrive e2 region", existing.IDRIVE_E2_REGION ?? DEFAULTS.region),
-    accessKey: await askSecret("IDrive e2 access key"),
-    secretKey: await askSecret("IDrive e2 secret key"),
-    sourceBucket: await ask(
-      "Source (study files) bucket",
-      existing.TCM_SOURCE_BUCKET ?? DEFAULTS.sourceBucket
-    ),
-    mcqBucket: await ask(
-      "MCQ (output) bucket",
-      existing.TCM_MCQ_BUCKET ?? DEFAULTS.mcqBucket
-    ),
-    nlmBin: await ask("nlm CLI path", existing.TCM_NLM_BIN ?? DEFAULTS.nlmBin),
-    dataDir: await ask("Local data directory", existing.TCM_DATA_DIR ?? DEFAULTS.dataDir),
-  };
+  const endpoint = await ask(
+    "IDrive e2 endpoint URL",
+    existing.IDRIVE_E2_ENDPOINT ?? DEFAULTS.endpoint
+  );
+  const region = await ask("IDrive e2 region", existing.IDRIVE_E2_REGION ?? DEFAULTS.region);
+  const accessKey = await askSecret("IDrive e2 access key");
+  const secretKey = await askSecret("IDrive e2 secret key");
+
+  // Discover buckets right after creds so we can show the actual list.
+  stdout.write(`\nDiscovering buckets in ${region}...\n`);
+  let discoveredBuckets: string[] = [];
+  try {
+    const client = buildS3(endpoint, region, accessKey, secretKey);
+    discoveredBuckets = await listAllBuckets(client);
+    stdout.write(`Found ${discoveredBuckets.length} bucket(s):\n`);
+    discoveredBuckets.forEach((b, i) => stdout.write(`  ${i + 1}. ${b}\n`));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    stdout.write(`✗ Could not list buckets: ${msg}\n`);
+    stdout.write(`  Continuing with empty bucket discovery; you'll enter names manually.\n`);
+  }
+
+  const mcqBucket = await ask(
+    "MCQ output bucket (where generated CSVs go)",
+    existing.TCM_MCQ_BUCKET ?? DEFAULTS.mcqBucket
+  );
+
+  let subjectBuckets: string[] = [];
+  if (discoveredBuckets.length > 0) {
+    const candidate = discoveredBuckets.filter((b) => b !== mcqBucket);
+    const csv = candidate.join(",");
+    const answer = await ask(
+      `Subject buckets (comma-separated, or 'auto' to use all discovered except output)`,
+      csv
+    );
+    subjectBuckets =
+      answer === "auto"
+        ? candidate
+        : answer
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+  } else {
+    const answer = await ask(
+      `Subject buckets (comma-separated, e.g. maths,biology,physics)`,
+      existing.TCM_SUBJECT_BUCKETS ?? ""
+    );
+    subjectBuckets = answer
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  const nlmBin = await ask("nlm CLI path", existing.TCM_NLM_BIN ?? DEFAULTS.nlmBin);
+  const dataDir = await ask("Local data directory", existing.TCM_DATA_DIR ?? DEFAULTS.dataDir);
 
   rl.close();
 
-  // 1. Write env file (mode 0600).
+  const answers: Answers = {
+    endpoint,
+    region,
+    accessKey,
+    secretKey,
+    subjectBuckets,
+    mcqBucket,
+    nlmBin,
+    dataDir,
+  };
+
+  // Write env file.
   const envBody = renderEnvFile(answers);
   mkdirSync(dirname(envPath), { recursive: true });
   writeFileSync(envPath, envBody, "utf8");
   try {
     chmodSync(envPath, 0o600);
   } catch {
-    // ignore on platforms that don't support it
+    // ignore
   }
   stdout.write(`\n✓ Wrote ${envPath} (mode 0600)\n`);
 
-  // 2. Verify credentials by listing the source bucket.
-  stdout.write(`Verifying IDrive credentials by listing s3://${answers.sourceBucket}/ ...\n`);
-  try {
-    await verifyS3(answers);
-    stdout.write(`✓ Source bucket reachable.\n`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    stdout.write(`✗ Could not list source bucket: ${msg}\n`);
-    stdout.write(`  Setup wrote the .env anyway — fix credentials and re-run.\n`);
+  // Verify each subject bucket is reachable (HeadBucket via ListObjectsV2 max 1).
+  if (subjectBuckets.length > 0) {
+    stdout.write(`\nVerifying subject buckets...\n`);
+    const client = buildS3(endpoint, region, accessKey, secretKey);
+    for (const b of subjectBuckets) {
+      const ok = await pingBucket(client, b);
+      stdout.write(`  ${ok ? "✓" : "✗"} ${b}\n`);
+    }
   }
 
-  // 3. Check nlm CLI.
-  stdout.write(`Checking nlm CLI at ${answers.nlmBin} ...\n`);
-  const nlmStatus = await checkNlm(expandPath(answers.nlmBin));
+  // Check nlm CLI.
+  stdout.write(`\nChecking nlm CLI at ${nlmBin}...\n`);
+  const nlmStatus = await checkNlm(expandPath(nlmBin));
   if (nlmStatus.ok) {
-    stdout.write(`✓ nlm authenticated: ${nlmStatus.email ?? "(unknown email)"}\n`);
+    stdout.write(`✓ nlm authenticated${nlmStatus.email ? ` as ${nlmStatus.email}` : ""}\n`);
   } else {
     stdout.write(`✗ nlm check failed: ${nlmStatus.error}\n`);
-    stdout.write(`  Install with: pip install --user notebooklm-mcp-cli\n`);
-    stdout.write(`  Then: ${answers.nlmBin} login\n`);
+    stdout.write(`  Install: pipx install notebooklm-mcp-cli   (then: ${nlmBin} login)\n`);
   }
 
-  // 4. Print the openclaw config snippet.
+  // Print config snippet.
   stdout.write(`\n=== Paste this into your ~/.openclaw/config.json ===\n`);
   stdout.write(renderConfigSnippet(answers));
-  stdout.write(`\n=== End config snippet ===\n\n`);
+  stdout.write(`=== End config snippet ===\n\n`);
 
   stdout.write(`Next:\n`);
-  stdout.write(`  1. source ${envPath}   # or add to your shell profile\n`);
-  stdout.write(`  2. Apply the config snippet above to ~/.openclaw/config.json.\n`);
-  stdout.write(`  3. Restart your OpenClaw gateway.\n`);
-  stdout.write(`  4. Try: openclaw tcm idrive sync\n`);
+  stdout.write(`  1. set -a; source ${envPath}; set +a   # or load via your service manager\n`);
+  stdout.write(`  2. Apply the config snippet above to ~/.openclaw/config.json\n`);
+  stdout.write(`  3. Restart your OpenClaw gateway\n`);
+  stdout.write(`  4. openclaw tcm idrive sync\n`);
+  stdout.write(`  5. openclaw tcm quiz generate biology --count 5 --difficulty easy\n`);
 }
 
 function expandPath(p: string): string {
   if (p.startsWith("~")) return join(homedir(), p.slice(2));
   return p;
+}
+
+function buildS3(endpoint: string, region: string, ak: string, sk: string): S3Client {
+  const ep = /^https?:\/\//.test(endpoint) ? endpoint : `https://${endpoint}`;
+  return new S3Client({
+    endpoint: ep,
+    region,
+    credentials: { accessKeyId: ak, secretAccessKey: sk },
+    forcePathStyle: true,
+  });
+}
+
+async function pingBucket(client: S3Client, bucket: string): Promise<boolean> {
+  try {
+    const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
+    await client.send(new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1 }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function loadEnvFile(path: string): Record<string, string> {
@@ -145,14 +210,14 @@ function renderEnvFile(a: Answers): string {
   const ts = new Date().toISOString();
   return [
     `# TCM Study Bot — written by openclaw tcm setup at ${ts}`,
-    `# Source this file before running OpenClaw, e.g. in your shell profile:`,
+    `# Source this file before running OpenClaw, e.g.:`,
     `#   set -a; source ~/.tcm/.env; set +a`,
     ``,
     `IDRIVE_E2_ACCESS_KEY=${a.accessKey}`,
     `IDRIVE_E2_SECRET_KEY=${a.secretKey}`,
     `IDRIVE_E2_ENDPOINT=${a.endpoint}`,
     `IDRIVE_E2_REGION=${a.region}`,
-    `TCM_SOURCE_BUCKET=${a.sourceBucket}`,
+    `TCM_SUBJECT_BUCKETS=${a.subjectBuckets.join(",")}`,
     `TCM_MCQ_BUCKET=${a.mcqBucket}`,
     `TCM_NLM_BIN=${a.nlmBin}`,
     `TCM_DATA_DIR=${a.dataDir}`,
@@ -169,7 +234,8 @@ function renderConfigSnippet(a: Answers): string {
           config: {
             endpoint: a.endpoint,
             region: a.region,
-            sourceBucket: a.sourceBucket,
+            subjectBuckets: a.subjectBuckets,
+            excludeBuckets: [a.mcqBucket],
             dataDir: a.dataDir,
           },
         },
@@ -183,7 +249,7 @@ function renderConfigSnippet(a: Answers): string {
             outputBucket: a.mcqBucket,
             endpoint: a.endpoint,
             region: a.region,
-            sourceBucket: a.sourceBucket,
+            subjectBuckets: a.subjectBuckets,
             dataDir: a.dataDir,
             nlmBin: a.nlmBin,
           },
@@ -192,17 +258,6 @@ function renderConfigSnippet(a: Answers): string {
     },
   };
   return JSON.stringify(cfg, null, 2) + "\n";
-}
-
-async function verifyS3(a: Answers): Promise<void> {
-  const endpoint = /^https?:\/\//.test(a.endpoint) ? a.endpoint : `https://${a.endpoint}`;
-  const client = new S3Client({
-    endpoint,
-    region: a.region,
-    credentials: { accessKeyId: a.accessKey, secretAccessKey: a.secretKey },
-    forcePathStyle: true,
-  });
-  await client.send(new ListObjectsV2Command({ Bucket: a.sourceBucket, MaxKeys: 1 }));
 }
 
 interface NlmCheck {
@@ -234,13 +289,9 @@ function checkNlm(binPath: string): Promise<NlmCheck> {
       clearTimeout(timer);
       const text = stdout + " " + stderr;
       const m = text.match(/Authentication valid!?\s*([^\s]+@[^\s]+)?/i);
-      if (code === 0 && m) {
-        resolve({ ok: true, email: m[1] });
-      } else if (code === 0) {
-        resolve({ ok: true });
-      } else {
-        resolve({ ok: false, error: text.trim().slice(0, 200) || `exit ${code}` });
-      }
+      if (code === 0 && m) resolve({ ok: true, email: m[1] });
+      else if (code === 0) resolve({ ok: true });
+      else resolve({ ok: false, error: text.trim().slice(0, 200) || `exit ${code}` });
     });
   });
 }

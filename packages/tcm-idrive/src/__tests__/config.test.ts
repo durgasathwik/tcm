@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveConfig, expandPath } from "../config.js";
+import { resolveConfig, expandPath, parseSourceSpec } from "../config.js";
 
 describe("expandPath", () => {
   it("expands ~ to homedir", () => {
@@ -19,20 +19,27 @@ describe("resolveConfig", () => {
     const cfg = resolveConfig(
       {
         endpoint: "https://s3.example.com",
-        sourceBucket: "tcm-study",
+        subjectBuckets: ["biology", "maths"],
       },
       { IDRIVE_E2_ACCESS_KEY: "AK123", IDRIVE_E2_SECRET_KEY: "SK456" }
     );
     expect(cfg.accessKey).toBe("AK123");
     expect(cfg.secretKey).toBe("SK456");
-    expect(cfg.region).toBe("us-east-1");
+    expect(cfg.subjectBuckets).toEqual(["biology", "maths"]);
+  });
+
+  it("subjectBuckets defaults to empty array (auto-discover mode)", () => {
+    const cfg = resolveConfig(
+      { endpoint: "https://s3.example.com" },
+      { IDRIVE_E2_ACCESS_KEY: "x", IDRIVE_E2_SECRET_KEY: "y" }
+    );
+    expect(cfg.subjectBuckets).toEqual([]);
   });
 
   it("respects custom *Env key names", () => {
     const cfg = resolveConfig(
       {
         endpoint: "https://s3.example.com",
-        sourceBucket: "x",
         accessKeyEnv: "MY_AK",
         secretKeyEnv: "MY_SK",
       },
@@ -42,14 +49,29 @@ describe("resolveConfig", () => {
   });
 
   it("throws when credentials missing", () => {
-    expect(() =>
-      resolveConfig({ endpoint: "https://s3.example.com", sourceBucket: "x" }, {})
-    ).toThrow(/missing credentials/);
+    expect(() => resolveConfig({ endpoint: "https://s3.example.com" }, {})).toThrow(
+      /missing credentials/
+    );
   });
 
   it("rejects missing required fields", () => {
     expect(() =>
       resolveConfig({}, { IDRIVE_E2_ACCESS_KEY: "x", IDRIVE_E2_SECRET_KEY: "y" })
     ).toThrow();
+  });
+});
+
+describe("parseSourceSpec", () => {
+  it("returns bucket-only when no slash", () => {
+    expect(parseSourceSpec("biology")).toEqual({ bucket: "biology", key: "" });
+  });
+  it("splits on first slash", () => {
+    expect(parseSourceSpec("biology/Genetics")).toEqual({ bucket: "biology", key: "Genetics" });
+  });
+  it("preserves nested key paths", () => {
+    expect(parseSourceSpec("biology/Genetics/mendel.pdf")).toEqual({
+      bucket: "biology",
+      key: "Genetics/mendel.pdf",
+    });
   });
 });

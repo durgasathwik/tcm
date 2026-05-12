@@ -11,10 +11,17 @@ export function writeFolderSummaries(
   mkdirSync(outDir, { recursive: true });
   const top = store.listTopFolders(bucket);
   let written = 0;
+
+  // One summary for the bucket itself (subject overview).
+  const allFiles = store.listByPrefix(bucket, "", 5000);
+  const subjectMd = renderSubjectMarkdown(bucket, allFiles.length, allFiles);
+  writeFileSync(join(outDir, `subject-${slugify(bucket)}.md`), subjectMd, "utf8");
+  written++;
+
   for (const folder of top) {
     const files = store.listByPrefix(bucket, folder.path, 1000);
-    const slug = slugify(folder.path);
-    const md = renderFolderMarkdown(folder.path, folder.fileCount, folder.totalBytes, files);
+    const slug = `${slugify(bucket)}-${slugify(folder.path)}`;
+    const md = renderFolderMarkdown(bucket, folder.path, folder.fileCount, folder.totalBytes, files);
     writeFileSync(join(outDir, `${slug}.md`), md, "utf8");
     written++;
   }
@@ -22,6 +29,7 @@ export function writeFolderSummaries(
 }
 
 function renderFolderMarkdown(
+  bucket: string,
   path: string,
   fileCount: number,
   totalBytes: number,
@@ -30,14 +38,15 @@ function renderFolderMarkdown(
   const head = [
     "---",
     "source: tcm-idrive",
+    `subject: ${bucket}`,
     `folder: ${path}`,
     `file_count: ${fileCount}`,
     `total_bytes: ${totalBytes}`,
     `indexed_at: ${new Date().toISOString()}`,
-    "tags: [tcm, study, " + path.toLowerCase().replace(/\s+/g, "-") + "]",
+    `tags: [tcm, study, ${bucket.toLowerCase()}, ${path.toLowerCase().replace(/\s+/g, "-")}]`,
     "---",
     "",
-    `# ${path}`,
+    `# ${bucket}/${path}`,
     "",
     `${fileCount} files, ${humanBytes(totalBytes)} total.`,
     "",
@@ -49,6 +58,30 @@ function renderFolderMarkdown(
     .map((f) => `- \`${f.key}\` (${humanBytes(f.size)}, modified ${f.lastModified})`)
     .join("\n");
   return head.join("\n") + body + "\n";
+}
+
+function renderSubjectMarkdown(
+  bucket: string,
+  fileCount: number,
+  files: { key: string; size: number; lastModified: string }[]
+): string {
+  const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
+  const head = [
+    "---",
+    "source: tcm-idrive",
+    `subject: ${bucket}`,
+    `file_count: ${fileCount}`,
+    `total_bytes: ${totalBytes}`,
+    `indexed_at: ${new Date().toISOString()}`,
+    `tags: [tcm, study, subject, ${bucket.toLowerCase()}]`,
+    "---",
+    "",
+    `# ${bucket}`,
+    "",
+    `Subject bucket with ${fileCount} files, ${humanBytes(totalBytes)} total.`,
+    "",
+  ];
+  return head.join("\n") + "\n";
 }
 
 function humanBytes(n: number): string {

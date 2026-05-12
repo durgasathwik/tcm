@@ -26,6 +26,7 @@ import {
   sourcesToAdd,
 } from "./notebook-map.js";
 import type { ResolvedQuizConfig } from "./config.js";
+import { parseSourceSpec } from "./config.js";
 
 export interface ProgressEvent {
   type: "start" | "resolved" | "step" | "done" | "error";
@@ -78,15 +79,26 @@ export async function runGenerate(input: GenerateInput): Promise<GenerateOutput>
   onProgress({ type: "start", message: `job ${jobId} started`, data: { jobId } });
 
   try {
-    // 1. Resolve source via shared SQLite index (read-only).
-    const sourceFiles = resolveSourceFromIndex(indexDbPath, cfg.sourceBucket, source).slice(
+    // 1. Parse source spec: "<bucket>" or "<bucket>/<keyOrPrefix>".
+    const { bucket: srcBucket, key: srcKey } = parseSourceSpec(source);
+    if (!srcBucket) {
+      throw new Error(`source must be "<bucket>" or "<bucket>/<path>" — got "${source}"`);
+    }
+    if (cfg.subjectBuckets.length > 0 && !cfg.subjectBuckets.includes(srcBucket)) {
+      throw new Error(
+        `bucket "${srcBucket}" is not in subjectBuckets (${cfg.subjectBuckets.join(", ")})`
+      );
+    }
+    const sourceFiles = resolveSourceFromIndex(indexDbPath, srcBucket, srcKey).slice(
       0,
       cfg.maxFilesPerJob
     );
     if (sourceFiles.length === 0) {
-      throw new Error(`no files resolved for source "${source}". Run \`openclaw tcm idrive sync\` first.`);
+      throw new Error(
+        `no files resolved for "${source}" in bucket "${srcBucket}". Run \`openclaw tcm idrive sync\` first.`
+      );
     }
-    job = { ...job, sourceKeys: sourceFiles.map((f) => f.key) };
+    job = { ...job, sourceKeys: sourceFiles.map((f) => `${srcBucket}/${f.key}`) };
     writeJob(cfg.resolvedDataDir, job);
     onProgress({
       type: "resolved",
@@ -95,18 +107,21 @@ export async function runGenerate(input: GenerateInput): Promise<GenerateOutput>
     });
 
     // 2. Find or create notebook for this topic (notebook reuse).
+    //    Topic key includes the bucket so different subjects keep separate notebooks
+    //    even if a folder name collides (e.g. biology/Genetics vs maths/Genetics).
+    const topicKey = source;
     const mapPath = notebookMapPath(cfg.resolvedDataDir);
     let map: NotebookMap = loadNotebookMap(mapPath);
-    const existing = getEntry(map, source);
+    const existing = getEntry(map, topicKey);
     let notebookId: string;
     if (existing) {
       notebookId = existing.notebookId;
       onProgress({
         type: "step",
-        message: `reusing notebook ${notebookId} for topic "${source}"`,
+        message: `reusing notebook ${notebookId} for topic "${topicKey}"`,
       });
     } else {
-      const title = `TCM ${source} ${startedAt.slice(0, 10)}`;
+      const title = `TCM ${topicKey} ${startedAt.slice(0, 10)}`;
       notebookId = await nlmCreateNotebook(cfg, title);
       onProgress({ type: "step", message: `created notebook ${notebookId}` });
     }
@@ -114,28 +129,40 @@ export async function runGenerate(input: GenerateInput): Promise<GenerateOutput>
     writeJob(cfg.resolvedDataDir, job);
 
     // 3. Diff sources and download+add only what's new/changed.
-    const desired = sourceFiles.map((f) => ({ key: f.key, etag: f.etag }));
-    const toAdd = sourcesToAdd(existing, desired);
+    //    Bucket-qualified key so the map can hold sources from any subject bucket.
+    const desired = sourceFiles.map((f) => ({
+      key: `${srcBucket}/${f.key}`,
+      bucket: srcBucket,
+      rawKey: f.key,
+      etag: f.etag,
+    }));
+    const toAdd = sourcesToAdd(
+      existing,
+      desired.map(({ key, etag }) => ({ key, etag }))
+    );
     if (toAdd.length === 0) {
       onProgress({ type: "step", message: "all sources already in notebook" });
     }
     mkdirSync(scratchDir, { recursive: true });
     const s3 = buildS3Client(cfg);
     for (let i = 0; i < toAdd.length; i++) {
-      const src = toAdd[i];
-      const dest = join(scratchDir, basename(src.key) || `source-${i}.bin`);
+      const item = toAdd[i];
+      // Map back to the original (bucket, rawKey) to download.
+      const desiredEntry = desired.find((d) => d.key === item.key);
+      if (!desiredEntry) continue;
+      const dest = join(scratchDir, basename(desiredEntry.rawKey) || `source-${i}.bin`);
       onProgress({
         type: "step",
-        message: `[${i + 1}/${toAdd.length}] downloading ${src.key}`,
+        message: `[${i + 1}/${toAdd.length}] downloading ${item.key}`,
       });
-      await downloadToFile(s3, cfg.sourceBucket, src.key, dest);
+      await downloadToFile(s3, desiredEntry.bucket, desiredEntry.rawKey, dest);
       onProgress({
         type: "step",
         message: `[${i + 1}/${toAdd.length}] uploading to NotebookLM`,
       });
       await nlmAddSource(cfg, notebookId, dest);
     }
-    map = upsertEntry(map, source, notebookId, toAdd);
+    map = upsertEntry(map, topicKey, notebookId, toAdd);
     saveNotebookMap(mapPath, map);
 
     // 4. Query NotebookLM for MCQs.

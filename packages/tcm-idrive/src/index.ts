@@ -32,11 +32,20 @@ export default definePluginEntry({
           const cfg = resolveConfig(pluginConfig);
           const store = new SqliteStore(defaultDbPath(cfg.resolvedDataDir));
           try {
-            const hits = store.find(cfg.sourceBucket, params.query, params.limit ?? 20);
+            const limit = params.limit ?? 20;
+            const buckets = store.distinctBuckets();
+            const hits: Array<{ bucket: string; key: string; size: number }> = [];
+            for (const b of buckets) {
+              for (const h of store.find(b, params.query, limit)) {
+                hits.push({ bucket: h.bucket, key: h.key, size: h.size });
+                if (hits.length >= limit) break;
+              }
+              if (hits.length >= limit) break;
+            }
             const text =
               hits.length === 0
                 ? `No matches for "${params.query}".`
-                : hits.map((h) => `${h.key} (${h.size} B)`).join("\n");
+                : hits.map((h) => `${h.bucket}/${h.key} (${h.size} B)`).join("\n");
             return {
               content: [{ type: "text" as const, text }],
               details: { hits, count: hits.length },

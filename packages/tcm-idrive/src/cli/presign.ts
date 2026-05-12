@@ -1,15 +1,23 @@
 import type { S3Client } from "@aws-sdk/client-s3";
 import { presignDownload } from "../s3-client.js";
 import type { ResolvedIdriveConfig } from "../config.js";
+import { parseSourceSpec } from "../config.js";
 
 export interface PresignOpts {
   cfg: ResolvedIdriveConfig;
   client: S3Client;
-  key: string;
+  /** "<bucket>/<key>" spec */
+  spec: string;
   ttl: number;
 }
 
 export async function runPresign(opts: PresignOpts): Promise<void> {
-  const url = await presignDownload(opts.client, opts.cfg.sourceBucket, opts.key, opts.ttl);
+  const { client, spec, ttl } = opts;
+  const { bucket, key } = parseSourceSpec(spec);
+  if (!bucket || !key) {
+    process.stderr.write(`usage: presign <bucket>/<key>\n`);
+    process.exit(1);
+  }
+  const url = await presignDownload(client, bucket, key, ttl);
   process.stdout.write(url + "\n");
 }

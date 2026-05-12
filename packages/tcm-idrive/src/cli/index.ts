@@ -42,8 +42,11 @@ export function registerTcmIdriveCli(program: Command, ctx: CliContext): void {
 
   idrive
     .command("sync")
-    .description("List source bucket and update local index + memory summaries")
-    .option("-p, --prefix <prefix>", "Only sync keys under this prefix")
+    .description("List subject buckets and update local index + memory summaries")
+    .option(
+      "-p, --prefix <bucket-or-path>",
+      "Only sync this bucket or '<bucket>/<keyPrefix>'"
+    )
     .option("--dry-run", "Report changes without writing")
     .action(async (opts) => {
       const { cfg, client, store } = open();
@@ -56,7 +59,9 @@ export function registerTcmIdriveCli(program: Command, ctx: CliContext): void {
 
   idrive
     .command("ls [path]")
-    .description("List folder contents at <path> (folders + files)")
+    .description(
+      "List buckets (no path), or top folders ('<bucket>'), or folder contents ('<bucket>/<path>')"
+    )
     .action(async (path: string | undefined) => {
       const { cfg, store } = open();
       try {
@@ -67,13 +72,13 @@ export function registerTcmIdriveCli(program: Command, ctx: CliContext): void {
     });
 
   idrive
-    .command("tree")
-    .description("Print folder tree summary for the source bucket")
+    .command("tree [bucket]")
+    .description("Print folder tree for all subject buckets, or for a single bucket")
     .option("--depth <n>", "Max depth to show", (v) => parseInt(v, 10), 3)
-    .action(async (opts) => {
+    .action(async (bucket: string | undefined, opts) => {
       const { cfg, store } = open();
       try {
-        runTree({ cfg, store, depth: opts.depth });
+        runTree({ cfg, store, depth: opts.depth, bucket });
       } finally {
         store.close();
       }
@@ -81,32 +86,33 @@ export function registerTcmIdriveCli(program: Command, ctx: CliContext): void {
 
   idrive
     .command("find <query>")
-    .description("Fuzzy search filenames")
+    .description("Fuzzy search filenames across all subject buckets")
+    .option("--bucket <name>", "Restrict to a single bucket")
     .option("--limit <n>", "Max results", (v) => parseInt(v, 10), 20)
     .action(async (query: string, opts) => {
       const { cfg, store } = open();
       try {
-        runFind({ cfg, store, query, limit: opts.limit });
+        runFind({ cfg, store, query, limit: opts.limit, bucket: opts.bucket });
       } finally {
         store.close();
       }
     });
 
   idrive
-    .command("get <key>")
-    .description("Download a single object to a local path")
+    .command("get <spec>")
+    .description("Download an object: spec format '<bucket>/<key>'")
     .requiredOption("--out <path>", "Local path to write")
-    .action(async (key: string, opts) => {
+    .action(async (spec: string, opts) => {
       const { cfg, client } = open();
-      await runGet({ cfg, client, key, out: opts.out });
+      await runGet({ cfg, client, spec, out: opts.out });
     });
 
   idrive
-    .command("presign <key>")
-    .description("Print a presigned download URL for an object")
+    .command("presign <spec>")
+    .description("Print a presigned URL: spec format '<bucket>/<key>'")
     .option("--ttl <seconds>", "URL TTL in seconds", (v) => parseInt(v, 10), 86400)
-    .action(async (key: string, opts) => {
+    .action(async (spec: string, opts) => {
       const { cfg, client } = open();
-      await runPresign({ cfg, client, key, ttl: opts.ttl });
+      await runPresign({ cfg, client, spec, ttl: opts.ttl });
     });
 }

@@ -1,6 +1,7 @@
 import {
   S3Client,
   ListObjectsV2Command,
+  ListBucketsCommand,
   GetObjectCommand,
   type _Object,
 } from "@aws-sdk/client-s3";
@@ -66,6 +67,27 @@ export async function presignDownload(
   return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
     expiresIn: ttlSeconds,
   });
+}
+
+export async function listAllBuckets(client: S3Client): Promise<string[]> {
+  const out = await client.send(new ListBucketsCommand({}));
+  return (out.Buckets ?? []).map((b) => b.Name ?? "").filter(Boolean);
+}
+
+/**
+ * Resolve which buckets the plugin should treat as subjects.
+ * - If config.subjectBuckets is non-empty, use that list verbatim.
+ * - Otherwise, ListBuckets and exclude anything in excludeBuckets.
+ */
+export async function resolveSubjectBuckets(
+  client: S3Client,
+  explicit: string[],
+  exclude: string[]
+): Promise<string[]> {
+  if (explicit.length > 0) return explicit;
+  const all = await listAllBuckets(client);
+  const excl = new Set(exclude);
+  return all.filter((b) => !excl.has(b));
 }
 
 /** Strip an etag's surrounding quotes if present. */

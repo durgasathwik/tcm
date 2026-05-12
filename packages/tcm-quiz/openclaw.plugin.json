@@ -1,7 +1,7 @@
 {
   "id": "tcm-quiz",
   "name": "TCM Quiz Pipeline",
-  "description": "Generates MCQ CSVs from study files: resolves source via tcm-idrive's SQLite index, drives NotebookLM via tcm-notebooklm, writes CSV to a separate output bucket. Reuses notebooks per topic. Exposes openclaw tcm quiz ... CLI and an mcq_status tool.",
+  "description": "Generates MCQ CSVs from study files. Resolves source as '<bucket>/<keyOrPrefix>' across the subject buckets indexed by tcm-idrive, drives NotebookLM (reusing notebooks per topic), writes CSV to a separate output bucket. Exposes openclaw tcm quiz ... CLI and an mcq_status tool.",
   "version": "0.1.0",
   "contracts": {
     "tools": ["mcq_status"]
@@ -15,11 +15,11 @@
     "properties": {
       "outputBucket": {
         "type": "string",
-        "description": "S3 bucket where generated CSVs land."
+        "description": "S3 bucket where generated CSVs land. Should be separate from subject buckets."
       },
       "endpoint": {
         "type": "string",
-        "description": "IDrive e2 endpoint URL (same as tcm-idrive)."
+        "description": "IDrive e2 endpoint URL."
       },
       "region": {
         "type": "string",
@@ -33,13 +33,14 @@
         "type": "string",
         "default": "IDRIVE_E2_SECRET_KEY"
       },
-      "sourceBucket": {
-        "type": "string",
-        "description": "S3 bucket holding study files (same as tcm-idrive)."
+      "subjectBuckets": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Allowed subject buckets — quiz generate rejects any bucket not in this list. Empty = allow any.",
+        "default": []
       },
       "dataDir": {
         "type": "string",
-        "description": "Local state directory shared with tcm-idrive.",
         "default": "~/.tcm"
       },
       "nlmBin": {
@@ -60,6 +61,6 @@
         "default": ["question", "A", "B", "C", "D", "correct", "explanation", "source_key"]
       }
     },
-    "required": ["outputBucket", "endpoint", "sourceBucket"]
+    "required": ["outputBucket", "endpoint"]
   }
 }

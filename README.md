@@ -10,17 +10,33 @@ Three OpenClaw plugins working together. No deployment scaffolding — you bring
 - **`tcm-notebooklm`** — Wraps the [`nlm`](https://pypi.org/project/notebooklm-mcp-cli/) CLI. Exposes `openclaw tcm nlm status/create/add/ask/list`.
 - **`tcm-quiz`** — Orchestrator. Resolves a folder/file from the index, downloads each source, uploads to a NotebookLM notebook (reusing per topic — new sources are appended, never re-uploaded), asks for MCQs, writes a CSV, uploads to a separate output bucket, prints a presigned download URL. Exposes `openclaw tcm quiz generate/list/show/download/forget` and an `mcq_status` MCP tool.
 
+## Bucket model
+
+One bucket per subject. Typical setup:
+
+```
+s3://maths/    s3://biology/    s3://english/    s3://physics/
+s3://chemistry/ s3://hindi/     s3://social/     s3://telugu/
+s3://tcm-mcqs/   ← output bucket where generated CSVs land
+```
+
+Each subject bucket holds nested folders of source files (PDFs, notes, slides). Source specs everywhere use `<bucket>/<keyOrPrefix>` syntax — e.g. `biology/Genetics` means the `Genetics/` prefix in the `biology` bucket. Just `biology` means everything in that bucket.
+
 ## End-to-end user flow
 
 ```
 # 1. one-time
-openclaw tcm setup                          # interactive: keys, buckets, nlm path
-openclaw tcm idrive sync                    # scan your S3 study bucket
+openclaw tcm setup                          # interactive: keys, region, bucket list, nlm path
+openclaw tcm idrive sync                    # scan every subject bucket
 
 # 2. anytime
-openclaw tcm quiz generate "Biology/Genetics" --count 30 --difficulty medium
+openclaw tcm quiz generate "biology/Genetics" --count 30 --difficulty medium
 # → CSV in s3://tcm-mcqs/mcq/<jobId>-biology-genetics.csv
 # → presigned download URL printed (24h TTL by default)
+
+# Other examples:
+openclaw tcm quiz generate biology --count 20         # whole subject
+openclaw tcm quiz generate maths/algebra --count 15   # one subfolder
 ```
 
 If you're invoking this from a Telegram-fronted agent (or any other agent connected to the gateway): the agent shells out to the same CLI commands and reads the final JSON line for the result. The 30 MCQs never enter the agent's context — only the receipt does.
@@ -57,12 +73,13 @@ It prompts for IDrive credentials and bucket names, writes `~/.tcm/.env` (mode 0
 | Command | What it does |
 | --- | --- |
 | `openclaw tcm setup` | Interactive credential setup |
-| `openclaw tcm idrive sync [--prefix X]` | Scan source bucket → SQLite + memory summaries |
-| `openclaw tcm idrive ls [path]` | List folder contents (folders + files) |
-| `openclaw tcm idrive tree [--depth N]` | Tree view of folder structure |
-| `openclaw tcm idrive find <query>` | Fuzzy search filenames |
-| `openclaw tcm idrive get <key> --out <path>` | Download one object |
-| `openclaw tcm idrive presign <key>` | Print a presigned download URL |
+| `openclaw tcm idrive sync [--prefix <bucket>[/<path>]]` | Scan all subject buckets → SQLite + memory summaries |
+| `openclaw tcm idrive ls` | List subject buckets |
+| `openclaw tcm idrive ls <bucket>[/<path>]` | List folder contents inside a bucket |
+| `openclaw tcm idrive tree [bucket] [--depth N]` | Tree view across all buckets or one |
+| `openclaw tcm idrive find <query> [--bucket N]` | Fuzzy search filenames across buckets |
+| `openclaw tcm idrive get <bucket>/<key> --out <path>` | Download one object |
+| `openclaw tcm idrive presign <bucket>/<key>` | Print a presigned download URL |
 | `openclaw tcm nlm status` | NotebookLM auth check |
 | `openclaw tcm nlm create <title>` | Create a notebook, print its ID |
 | `openclaw tcm nlm add <nb-id> --file <path>` | Add a source |
