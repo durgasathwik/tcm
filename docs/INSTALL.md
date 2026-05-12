@@ -39,6 +39,30 @@ openclaw plugins install git+https://github.com/durgasathwik/tcm.git#packages/tc
 openclaw plugins install git+https://github.com/durgasathwik/tcm.git#packages/tcm-quiz
 ```
 
+### If install is blocked by code safety scan
+
+The plugins shell out to the `nlm` CLI via `child_process.spawn` (legitimate — that's how they drive NotebookLM). On some OpenClaw versions the safety scanner flags this as `dangerous-exec` and blocks install. Allowlist the three plugins:
+
+```bash
+openclaw config set 'plugins.allow' '["tcm-idrive","tcm-notebooklm","tcm-quiz"]'
+```
+
+Or pass `--dangerously-force-unsafe-install` per install. Review the spawn surface first — it's in `packages/tcm-notebooklm/src/nlm-runner.ts` and `packages/tcm-idrive/src/cli/setup.ts`.
+
+### If install fails with a symlink error
+
+`Error: manifest dependency scan found node_modules symlink target outside install root` means pnpm's default `node-linker=isolated` produced symlinks the scanner refuses to follow. This repo ships `.npmrc` with `node-linker=hoisted` so a fresh `pnpm install` produces a flat tree. If you already installed before pulling that file, blow away the trees and reinstall:
+
+```bash
+rm -rf node_modules packages/*/node_modules
+pnpm install
+pnpm -r exec tsc -p tsconfig.json
+```
+
+### Native build approval (pnpm 11)
+
+pnpm 11 prompts to approve native module builds (`better-sqlite3`) even with `onlyBuiltDependencies` set in `package.json`. If `pnpm install` pauses, approve only `better-sqlite3`; reject the rest.
+
 ## Configure
 
 Run the wizard — it handles everything end-to-end:
@@ -69,12 +93,8 @@ Add that to your shell profile, or have your service manager (systemd, etc.) loa
 | --- | --- | --- |
 | `IDRIVE_E2_ACCESS_KEY` | yes | IDrive access key |
 | `IDRIVE_E2_SECRET_KEY` | yes | IDrive secret key |
-| `IDRIVE_E2_ENDPOINT` | no (defaults in plugin config) | Override endpoint URL |
-| `IDRIVE_E2_REGION` | no | Override signature region |
-| `TCM_SOURCE_BUCKET` | no | Override source bucket name |
-| `TCM_MCQ_BUCKET` | no | Override output bucket name |
-| `TCM_NLM_BIN` | no | Override path to `nlm` |
-| `TCM_DATA_DIR` | no | Override local data dir |
+
+All other settings (endpoint, region, subject buckets, output bucket, paths) come from `openclaw.json`, not env. Re-run `openclaw tcm setup` to change them.
 
 Note: the plugins themselves only read `accessKeyEnv` / `secretKeyEnv` from process env. All other settings come from `openclaw.json`. The `setup` snippet wires the JSON correctly.
 
