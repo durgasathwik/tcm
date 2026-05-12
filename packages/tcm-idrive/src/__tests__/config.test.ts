@@ -54,10 +54,28 @@ describe("resolveConfig", () => {
     );
   });
 
-  it("rejects missing required fields", () => {
-    expect(() =>
-      resolveConfig({}, { IDRIVE_E2_ACCESS_KEY: "x", IDRIVE_E2_SECRET_KEY: "y" })
-    ).toThrow();
+  it("uses defaults when config object is empty", () => {
+    const cfg = resolveConfig(
+      {},
+      { IDRIVE_E2_ACCESS_KEY: "x", IDRIVE_E2_SECRET_KEY: "y" }
+    );
+    expect(cfg.endpoint).toBe("https://s3.ap-northeast-1.idrivee2.com");
+    expect(cfg.region).toBe("ap-northeast-1");
+  });
+
+  it("auto-loads credentials from <dataDir>/.env when not in env", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "tcm-cfg-"));
+    writeFileSync(
+      join(dir, ".env"),
+      "IDRIVE_E2_ACCESS_KEY=from_file\nIDRIVE_E2_SECRET_KEY=from_file_sk\n",
+      "utf8"
+    );
+    const cfg = resolveConfig({ dataDir: dir }, {});
+    expect(cfg.accessKey).toBe("from_file");
+    expect(cfg.secretKey).toBe("from_file_sk");
   });
 });
 

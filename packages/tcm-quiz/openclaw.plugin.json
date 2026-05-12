@@ -15,15 +15,17 @@
     "properties": {
       "outputBucket": {
         "type": "string",
-        "description": "S3 bucket where generated CSVs land. Should be separate from subject buckets."
+        "description": "S3 bucket where generated CSVs land. Should be separate from subject buckets.",
+        "default": "tcm-mcqs"
       },
       "endpoint": {
         "type": "string",
-        "description": "IDrive e2 endpoint URL."
+        "description": "IDrive e2 endpoint URL.",
+        "default": "https://s3.ap-northeast-1.idrivee2.com"
       },
       "region": {
         "type": "string",
-        "default": "us-east-1"
+        "default": "ap-northeast-1"
       },
       "accessKeyEnv": {
         "type": "string",
@@ -60,7 +62,6 @@
         "items": { "type": "string" },
         "default": ["question", "A", "B", "C", "D", "correct", "explanation", "source_key"]
       }
-    },
-    "required": ["outputBucket", "endpoint"]
+    }
   }
 }

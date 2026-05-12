@@ -98,3 +98,5 @@ export function newJobId(): string {
   const r = Math.random().toString(36).slice(2, 8);
   return `j-${r}`;
 }
+
+export { readEnvFile, mergeEnvFromFile } from "./env-file.js";

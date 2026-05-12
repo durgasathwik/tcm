@@ -15,12 +15,13 @@
     "properties": {
       "endpoint": {
         "type": "string",
-        "description": "IDrive e2 endpoint URL, e.g. https://s3.ap-northeast-1.idrivee2.com"
+        "description": "IDrive e2 endpoint URL, e.g. https://s3.ap-northeast-1.idrivee2.com",
+        "default": "https://s3.ap-northeast-1.idrivee2.com"
       },
       "region": {
         "type": "string",
         "description": "Signature region.",
-        "default": "us-east-1"
+        "default": "ap-northeast-1"
       },
       "subjectBuckets": {
         "type": "array",
@@ -51,7 +52,6 @@
         "description": "If set, drop folder-summary markdown files here for OpenClaw memory indexer.",
         "default": ""
       }
-    },
-    "required": ["endpoint"]
+    }
   }
 }

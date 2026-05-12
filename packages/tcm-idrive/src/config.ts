@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { mergeEnvFromFile } from "@tcm/shared";
 
 export const IdriveConfig = z.object({
-  endpoint: z.string().url(),
-  region: z.string().default("us-east-1"),
+  endpoint: z.string().url().default("https://s3.ap-northeast-1.idrivee2.com"),
+  region: z.string().default("ap-northeast-1"),
   /**
    * Subject buckets — one bucket per subject (maths, biology, physics, etc).
    * Empty array means "auto-discover via ListBuckets" — useful when starting out,
@@ -36,11 +37,14 @@ export function resolveConfig(
   env: NodeJS.ProcessEnv = process.env
 ): ResolvedIdriveConfig {
   const cfg = IdriveConfig.parse(raw ?? {});
-  const accessKey = env[cfg.accessKeyEnv];
-  const secretKey = env[cfg.secretKeyEnv];
+  // Fall back to <dataDir>/.env so users don't have to `source` the file
+  // before starting OpenClaw — process env still wins if both are set.
+  const merged = mergeEnvFromFile(cfg.dataDir, env);
+  const accessKey = merged[cfg.accessKeyEnv];
+  const secretKey = merged[cfg.secretKeyEnv];
   if (!accessKey || !secretKey) {
     throw new Error(
-      `tcm-idrive: missing credentials. Set ${cfg.accessKeyEnv} and ${cfg.secretKeyEnv} in env.`
+      `tcm-idrive: missing credentials. Set ${cfg.accessKeyEnv} and ${cfg.secretKeyEnv} in env, or run \`openclaw tcm setup\` to write ${expandPath(cfg.dataDir)}/.env.`
     );
   }
   return {

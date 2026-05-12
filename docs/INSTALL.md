@@ -39,29 +39,35 @@ openclaw plugins install git+https://github.com/durgasathwik/tcm.git#packages/tc
 openclaw plugins install git+https://github.com/durgasathwik/tcm.git#packages/tcm-quiz
 ```
 
-### If install is blocked by code safety scan
+### Install-time gotchas
 
-The plugins shell out to the `nlm` CLI via `child_process.spawn` (legitimate — that's how they drive NotebookLM). On some OpenClaw versions the safety scanner flags this as `dangerous-exec` and blocks install. Allowlist the three plugins:
+OpenClaw runs a code-safety scan on every plugin install. These three are known to trip on pnpm-workspace layouts; all of them have a clean workaround:
 
-```bash
-openclaw config set 'plugins.allow' '["tcm-idrive","tcm-notebooklm","tcm-quiz"]'
-```
+1. **Symlinks from pnpm workspace deps** — `better-sqlite3` and `@tcm/shared` both resolve to symlinks under pnpm's default layout. The scanner refuses to follow them. This repo ships `.npmrc` with `node-linker=hoisted`, which fixes transitives but **not** workspace deps (`@tcm/shared` is still a symlink). The clean path is to pass `--dangerously-force-unsafe-install` on each install. Review the spawn surface first — it's in `packages/tcm-notebooklm/src/nlm-runner.ts` and `packages/tcm-idrive/src/cli/setup.ts`.
 
-Or pass `--dangerously-force-unsafe-install` per install. Review the spawn surface first — it's in `packages/tcm-notebooklm/src/nlm-runner.ts` and `packages/tcm-idrive/src/cli/setup.ts`.
+2. **`child_process.spawn` flagged as `dangerous-exec`** — the plugins call `spawn` to drive the `nlm` CLI (legitimate). The same `--dangerously-force-unsafe-install` covers this. Runtime allowlist alone (`plugins.allow`) doesn't bypass the install-time scan.
 
-### If install fails with a symlink error
+3. **pnpm 11 approve-builds prompt** — `pnpm install` may prompt to approve native module builds (`better-sqlite3`, `koffi`, `esbuild`, etc.) even with `onlyBuiltDependencies` set. Approve **only `better-sqlite3`**; reject the rest. This is a pnpm 11 ecosystem quirk, not a TCM bug.
 
-`Error: manifest dependency scan found node_modules symlink target outside install root` means pnpm's default `node-linker=isolated` produced symlinks the scanner refuses to follow. This repo ships `.npmrc` with `node-linker=hoisted` so a fresh `pnpm install` produces a flat tree. If you already installed before pulling that file, blow away the trees and reinstall:
+Putting it together — a clean install from scratch:
 
 ```bash
-rm -rf node_modules packages/*/node_modules
-pnpm install
+git clone https://github.com/durgasathwik/tcm.git
+cd tcm
+pnpm install                                              # approve better-sqlite3 only
 pnpm -r exec tsc -p tsconfig.json
+openclaw plugins install --dangerously-force-unsafe-install ./packages/tcm-idrive
+openclaw plugins install --dangerously-force-unsafe-install ./packages/tcm-notebooklm
+openclaw plugins install --dangerously-force-unsafe-install ./packages/tcm-quiz
 ```
 
-### Native build approval (pnpm 11)
+### Default config — no `openclaw.json` edit required to install
 
-pnpm 11 prompts to approve native module builds (`better-sqlite3`) even with `onlyBuiltDependencies` set in `package.json`. If `pnpm install` pauses, approve only `better-sqlite3`; reject the rest.
+All plugin config fields now have sensible defaults (endpoint defaults to `https://s3.ap-northeast-1.idrivee2.com`, output bucket defaults to `tcm-mcqs`, etc.). The plugin manifests have no `required` fields, so `openclaw plugins install` succeeds with empty `plugins.entries.<id>` objects. You only need to override defaults that don't match your IDrive region or bucket layout — `openclaw tcm setup` does this for you.
+
+### `.env` auto-loaded — `source` not required
+
+`tcm-idrive` and `tcm-quiz` both auto-load `<dataDir>/.env` (default `~/.tcm/.env`) at runtime. After `openclaw tcm setup --yes ...` writes the file, restart the gateway and the credentials are picked up automatically. Process env still wins when both are set, so CI/Docker workflows can override via `IDRIVE_E2_ACCESS_KEY` / `IDRIVE_E2_SECRET_KEY` env vars.
 
 ## Configure
 
