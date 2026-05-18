@@ -56,9 +56,20 @@ export default definePluginEntry({
     // Optional: surface a "recent jobs" hint via the same tool by listing when jobId is omitted —
     // but we keep the schema strict for now.
 
+    // tcm-quiz is the sole CLI owner for the `tcm` top-level command.
+    // OpenClaw's lazy CLI model invokes only one plugin's registerCli per
+    // command name, so this callback registers the nlm, idrive, and quiz
+    // subcommand trees together. The other two plugins no longer call
+    // registerCli; they only expose their CLI registrar for import here.
     api.registerCli(
       async ({ program }) => {
+        const { registerTcmNlmCli } = await import("@tcm/notebooklm/cli");
+        const { registerTcmIdriveCli } = await import("@tcm/idrive/cli");
         const { registerTcmQuizCli } = await import("./cli/index.js");
+        // All three registrars resolve their own config from ~/.tcm/.env;
+        // pluginConfig only supplies optional overrides.
+        registerTcmNlmCli(program, { config: pluginConfig });
+        registerTcmIdriveCli(program, { config: pluginConfig });
         registerTcmQuizCli(program, { config: pluginConfig });
       },
       {
