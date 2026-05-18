@@ -63,21 +63,9 @@ export default definePluginEntry({
       },
     });
 
-    // CLI: openclaw tcm idrive <subcommand>
-    api.registerCli(
-      async ({ program }) => {
-        const { registerTcmIdriveCli } = await import("./cli/index.js");
-        registerTcmIdriveCli(program, { config: pluginConfig });
-      },
-      {
-        descriptors: [
-          {
-            name: "tcm",
-            description: "TCM study toolkit",
-            hasSubcommands: true,
-          },
-        ],
-      }
-    );
+    // CLI registration is owned by tcm-quiz, which imports registerTcmIdriveCli
+    // from "@tcm/idrive/cli" and registers it on the shared `tcm` program.
+    // OpenClaw's lazy CLI model invokes only one plugin's registerCli per
+    // top-level command name, so this plugin no longer declares its own.
   },
 });

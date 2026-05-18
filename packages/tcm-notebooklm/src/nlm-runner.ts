@@ -74,6 +74,30 @@ export async function runNlm(cfg: NlmRunnerConfig, args: string[]): Promise<RunR
   });
 }
 
+/**
+ * Spawn the real `nlm` binary with the given argv, inheriting the parent
+ * process's stdio (stdin/stdout/stderr stream verbatim). Resolves with the
+ * child's exit code. Used by the CLI passthrough so `openclaw tcm nlm ...`
+ * behaves exactly like invoking `nlm ...` directly.
+ */
+export async function runNlmPassthrough(cfg: NlmRunnerConfig, args: string[]): Promise<number> {
+  return new Promise((resolveP) => {
+    const child = spawn(cfg.binary, args, { stdio: "inherit" });
+    child.on("error", (err) => {
+      process.stderr.write(`nlm spawn failed: ${err.message}\n`);
+      resolveP(127);
+    });
+    child.on("close", (code, signal) => {
+      if (code === null) {
+        // Killed by signal — mirror shell convention (128 + signal number).
+        resolveP(signal ? 128 : 1);
+        return;
+      }
+      resolveP(code);
+    });
+  });
+}
+
 export function isRateLimited(text: string): boolean {
   const t = text.toLowerCase();
   return (
