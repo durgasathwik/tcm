@@ -7,6 +7,7 @@ import { runLs } from "./ls.js";
 import { runTree } from "./tree.js";
 import { runFind } from "./find.js";
 import { runGet } from "./get.js";
+import { runPut } from "./put.js";
 import { runPresign } from "./presign.js";
 import { runSetup } from "./setup.js";
 
@@ -140,11 +141,38 @@ export function registerTcmIdriveCli(program: Command, ctx: CliContext): void {
     });
 
   idrive
+    .command("put <spec>")
+    .description("Upload a local file: spec '<bucket>' (key=filename) or '<bucket>/<key>'")
+    .requiredOption("--file <path>", "Local file to upload")
+    .option("--content-type <mime>", "Override content type (default: inferred from extension)")
+    .option("--overwrite", "Replace the destination object if it already exists")
+    .action(async (spec: string, opts) => {
+      const { cfg, client } = open();
+      await runPut({
+        cfg,
+        client,
+        spec,
+        file: opts.file,
+        contentType: opts.contentType,
+        overwrite: !!opts.overwrite,
+      });
+    });
+
+  idrive
     .command("presign <spec>")
     .description("Print a presigned URL: spec format '<bucket>/<key>'")
     .option("--ttl <seconds>", "URL TTL in seconds", (v) => parseInt(v, 10), 86400)
+    .option("--put", "Presign an upload (PUT) URL instead of a download (GET) URL")
+    .option("--content-type <mime>", "Content type the uploader must send (with --put)")
     .action(async (spec: string, opts) => {
       const { cfg, client } = open();
-      await runPresign({ cfg, client, spec, ttl: opts.ttl });
+      await runPresign({
+        cfg,
+        client,
+        spec,
+        ttl: opts.ttl,
+        put: !!opts.put,
+        contentType: opts.contentType,
+      });
     });
 }

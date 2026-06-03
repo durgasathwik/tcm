@@ -1,10 +1,10 @@
 {
   "id": "tcm-idrive",
   "name": "TCM IDrive Index",
-  "description": "Indexes one or more IDrive e2 S3 buckets (one bucket per subject) into a local SQLite store. Exposes openclaw tcm idrive ... CLI plus an idrive_find tool.",
-  "version": "0.1.0",
+  "description": "Indexes one or more IDrive e2 S3 buckets (one bucket per subject) into a local SQLite store. Exposes openclaw tcm idrive ... CLI (sync/ls/tree/find/get/put/presign) plus idrive_find and idrive_put tools.",
+  "version": "0.2.0",
   "contracts": {
-    "tools": ["idrive_find"]
+    "tools": ["idrive_find", "idrive_put"]
   },
   "activation": {
     "onStartup": true

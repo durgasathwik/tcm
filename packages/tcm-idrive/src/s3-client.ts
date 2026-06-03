@@ -3,10 +3,12 @@ import {
   ListObjectsV2Command,
   ListBucketsCommand,
   GetObjectCommand,
+  PutObjectCommand,
+  HeadObjectCommand,
   type _Object,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, readFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -65,6 +67,46 @@ export async function presignDownload(
   ttlSeconds: number
 ): Promise<string> {
   return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
+    expiresIn: ttlSeconds,
+  });
+}
+
+export async function objectExists(
+  client: S3Client,
+  bucket: string,
+  key: string
+): Promise<boolean> {
+  try {
+    await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return true;
+  } catch (err) {
+    const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+    if (e.name === "NotFound" || e.$metadata?.httpStatusCode === 404) return false;
+    throw err;
+  }
+}
+
+export async function uploadFile(
+  client: S3Client,
+  bucket: string,
+  key: string,
+  srcPath: string,
+  contentType: string
+): Promise<void> {
+  const body = readFileSync(srcPath);
+  await client.send(
+    new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: contentType })
+  );
+}
+
+export async function presignUpload(
+  client: S3Client,
+  bucket: string,
+  key: string,
+  ttlSeconds: number,
+  contentType?: string
+): Promise<string> {
+  return getSignedUrl(client, new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType }), {
     expiresIn: ttlSeconds,
   });
 }
